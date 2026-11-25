@@ -166,8 +166,11 @@ jobs:
           ARCH: ${{ steps.arch.outputs.arch }}
         run: |
           skopeo copy "oci:/tmp/bau/image-$ARCH" docker-daemon:app:e2e
+          # Schema der App = das eine Schema, das die Migrationen anlegen (die App liest APP_SCHEMA, nie fest im Code).
+          APP_SCHEMA=$(grep -hoiE 'create schema( if not exists)? "?[a-z0-9_]+' supabase/migrations/*.sql | head -1 | awk '{print $NF}' | tr -d '"')
+          [ -n "$APP_SCHEMA" ] || { echo "::error::Kein 'create schema' in supabase/migrations"; exit 1; }
           docker run -d --name app --network host \
-            -e MIGRATE=aus -e SUPABASE_URL="$E2E_API_URL" -e SUPABASE_PUBLISHABLE_KEY="${E2E_PUBLISHABLE_KEY:-$E2E_ANON_KEY}" app:e2e
+            -e MIGRATE=aus -e APP_SCHEMA="$APP_SCHEMA" -e SUPABASE_URL="$E2E_API_URL" -e SUPABASE_PUBLISHABLE_KEY="${E2E_PUBLISHABLE_KEY:-$E2E_ANON_KEY}" app:e2e
           for _ in $(seq 60); do curl -fsS "$BASE_URL/health" >/dev/null && exit 0; sleep 2; done
           docker logs app; echo "::error::App wird nicht gesund"; exit 1
       - run: npm ci && npx playwright install --with-deps chromium
