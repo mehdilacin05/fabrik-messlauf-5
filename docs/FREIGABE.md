@@ -1,6 +1,6 @@
 # Freigabe Design: Geräte-Inventar fürs Büro
 
-Stand: 2026-11-25 · Klasse: M · Heikel: nein · Höchstens 1 Seite. Freigabe = Merge des Design-PR; Änderungen als Kommentar mit Nummer.
+Stand: 2026-11-25 · Klasse: M · Heikel: nein · Freigabe = Merge des Design-PR; Änderungen als Kommentar mit Nummer.
 
 **App-Typ:** A Internes Werkzeug · **In einem Satz:** Das Büro (ca. 25 Leute) verwaltet Laptops, Monitore, Handys, Headsets: wer hat was, mit Historie.
 
