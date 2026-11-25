@@ -16,7 +16,7 @@ abfrage() { # Statuscode und Antworttext von /health, aus dem App-Container
 docker network create "$n" >/dev/null
 docker run -d --name "$n-db" --network "$n" -e POSTGRES_PASSWORD=postgres "$TESTDB_IMAGE" >/dev/null
 for _ in $(seq 60); do psql_db -tA -c "select 1 from pg_roles where rolname = 'authenticator'" 2>/dev/null | grep -q 1 && break; sleep 2; done
-psql_db -c "alter role authenticator password 'postgres'; create schema $schema; grant usage on schema $schema to anon;"
+psql_db -c "alter role authenticator password 'postgres'; create schema $schema; grant usage on schema $schema to anon, authenticated, service_role;"
 docker run -d --name "$n-rest" --network "$n" -e PGRST_DB_URI="postgres://authenticator:postgres@$n-db:5432/postgres" \
   -e PGRST_DB_SCHEMAS="$schema" -e PGRST_DB_ANON_ROLE=anon -e PGRST_JWT_SECRET=test-secret-at-least-32-characters-long "$REST_IMAGE" >/dev/null
 # Gateway wie in compose.staging.yml: /rest/v1 → PostgREST (Supabase erreicht die App ebenfalls nur so)

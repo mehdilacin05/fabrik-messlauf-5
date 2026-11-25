@@ -43,7 +43,7 @@ Stand: 2026-11-25 (Gerüst, Bauplan-Schritt 1).
 ## 6. Einrichtung des Klons
 - Einmal je Klon: `make hooks`. Danach läuft vor jedem `git push` gitleaks über die ganze Historie (`.githooks/pre-push`); ein Fund bricht den Push ab. Ein gefundenes Geheimnis wird widerrufen, nicht nur gelöscht.
 - Workflow-Dateien liegen als Vorlagen unter `ci-vorschlag/`; der Betreiber legt sie nach `.github/` (`/workflows <pr>`).
-- Für den CI-Job `app-e2e` braucht das Image `APP_SCHEMA` (und ab Bauplan-Schritt 4 `VERWALTUNG_START_EMAIL`) als Umgebungsvariable; die Vorlage `ci-vorschlag/ci.yml` setzt sie nicht und muss beim Ablegen um `-e APP_SCHEMA=inventar` im `docker run` ergänzt werden, sonst meldet `/health` 503.
+- Für den CI-Job `app-e2e` braucht das Image `APP_SCHEMA` (und ab Bauplan-Schritt 4 `VERWALTUNG_START_EMAIL`) als Umgebungsvariable; die Vorlage `ci-vorschlag/ci.yml` setzt sie nicht und muss beim Ablegen um `-e APP_SCHEMA=inventar` im `docker run` ergänzt werden. Das Schema `inventar` legt die erste Migration (`supabase/migrations/*_schema.sql`) an; ohne sie lädt PostgREST den Schema-Cache nicht und `/health` meldet 503.
 
 ## 7. Fristen (Kalender, 30 Tage Vorlauf)
 - Client-Secret der Microsoft-App-Registrierung (läuft spätestens nach 24 Monaten ab; danach kein Login).
