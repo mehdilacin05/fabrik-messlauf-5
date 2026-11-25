@@ -1,0 +1,234 @@
+# Vorlage: compose.staging.yml ins Repo (Gerüst-Schritt). Staging = eigener Stack mit kleiner eigener Supabase
+# (Datenbank, Login, Daten-API, Eingang; ca. 1 GB RAM), nie gegen die Live-Supabase.
+# Anlegen: einmal je Projekt in Portainer → Stacks → Add stack · Name <app>-staging · Build method Repository · Repository URL
+# https://github.com/<repo> · Reference refs/heads/main · Compose path compose.staging.yml · Environment variables (Advanced mode)
+# · GitOps-Updates/Polling AUS (der Dienst `nachzieher` zieht das Image; Polling deployt zu früh) · Deploy the stack.
+# Privates Repo: in Portainer „Authentication“ mit Lesetoken. DNS: zwei A-Einträge (App und API), Adressen eine Ebene tief.
+# Einzutragen sind nur Namen und Adressen (Variablen mit `:?` unten); Schlüssel und Passwörter erzeugt der Dienst
+# `schluessel` beim ersten Start selbst ins Volume `geheim`. Danach zieht der Dienst `nachzieher` jeden Merge (Tag `staging`) binnen einer Minute.
+# Löschen: Stack samt Volumes entfernen; beim nächsten Start ist alles neu (Testdaten, Schlüssel).
+#   APP          Kurzname, z. B. notizen          APP_SCHEMA   eigenes Schema der App, z. B. notizen
+#   REPO         owner/repo                       APP_HOST     staging.example.com
+#   SUPABASE_URL https://app-staging-api.example.com  SUPABASE_HOST app-staging-api.example.com
+#   Adressen nur eine Ebene unter der Domain (falls ein Proxy wie Cloudflare davor sitzt: der deckt nur *.example.com)
+#   optional: TRAEFIK_NETZ (public), TRAEFIK_EINGANG (websecure), TRAEFIK_ZERTIFIKAT (Let's-Encrypt-Resolver des Traefik, mytlschallenge), AZURE_* für Microsoft-Login
+name: "${APP:?APP fehlt}-staging"
+
+x-geheim: &geheim
+  volumes: ["geheim:/geheim:ro"]
+
+services:
+  schluessel: # einmalig: JWT-Schlüssel, DB-Passwort, anon/service-Schlüssel (HS256), nur wenn noch keine da sind
+    image: python:3.14-alpine
+    volumes: ["geheim:/geheim"]
+    restart: "no"
+    command:
+      - python3
+      - -c
+      - |
+        import base64, hashlib, hmac, json, pathlib, secrets, time
+        p = pathlib.Path("/geheim/env")
+        if not p.exists():
+            s, pw = secrets.token_urlsafe(48), secrets.token_urlsafe(24)
+            b = lambda d: base64.urlsafe_b64encode(json.dumps(d, separators=(",", ":")).encode()).rstrip(b"=")
+            def jwt(rolle):
+                kopf = b({"alg": "HS256", "typ": "JWT"}) + b"." + b({"role": rolle, "iss": "supabase",
+                       "iat": int(time.time()), "exp": int(time.time()) + 10 * 365 * 86400})
+                sig = base64.urlsafe_b64encode(hmac.new(s.encode(), kopf, hashlib.sha256).digest()).rstrip(b"=")
+                return (kopf + b"." + sig).decode()
+            p.write_text(f"JWT_SECRET={s}\nDB_PASSWORT={pw}\nANON_KEY={jwt('anon')}\nSERVICE_KEY={jwt('service_role')}\n")
+            # PostgREST hat keine Shell: liest Geheimnisse selbst aus Dateien (@/pfad)
+            pathlib.Path("/geheim/jwt").write_text(s)
+            pathlib.Path("/geheim/rest_db").write_text(f"postgres://authenticator:{pw}@db:5432/postgres")
+            for f in pathlib.Path("/geheim").iterdir():
+                f.chmod(0o644)
+        print("schluessel ok")
+
+  db:
+    image: supabase/postgres:17.6.1.136 # Datenbank: Version gepinnt
+    depends_on:
+      schluessel: { condition: service_completed_successfully }
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        '. /geheim/env && export POSTGRES_PASSWORD=$$DB_PASSWORT JWT_SECRET && exec docker-entrypoint.sh "$$@"',
+        "--",
+      ]
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    environment:
+      APP_SCHEMA: "${APP_SCHEMA:?APP_SCHEMA fehlt}"
+      JWT_EXP: "3600"
+    volumes:
+      - "db:/var/lib/postgresql/data"
+      - "geheim:/geheim:ro"
+    configs:
+      - source: fabrik_rollen
+        target: /docker-entrypoint-initdb.d/zz-fabrik.sh
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+      interval: 5s
+      retries: 30
+    restart: unless-stopped
+    networks: [intern]
+
+  auth:
+    image: supabase/gotrue:v2.198.0
+    <<: *geheim
+    depends_on:
+      db: { condition: service_healthy }
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        ". /geheim/env && export GOTRUE_JWT_SECRET=$$JWT_SECRET GOTRUE_DB_DATABASE_URL=postgres://supabase_auth_admin:$$DB_PASSWORT@db:5432/postgres && exec auth",
+      ]
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      PORT: "9999"
+      API_EXTERNAL_URL: "${SUPABASE_URL:?SUPABASE_URL fehlt}"
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_SITE_URL: "https://${APP_HOST:?APP_HOST fehlt}"
+      GOTRUE_URI_ALLOW_LIST: "https://${APP_HOST}/**"
+      GOTRUE_JWT_EXP: "3600"
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_DISABLE_SIGNUP: "true" # Konten legt nur der Admin-Zugang an
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true" # Testkonten mit Passwort (nur Staging)
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_EXTERNAL_AZURE_ENABLED: "${AZURE_AKTIV:-false}" # Microsoft-Login prüfen: eigene App-Registrierung für Staging
+      GOTRUE_EXTERNAL_AZURE_CLIENT_ID: "${AZURE_CLIENT_ID:-}"
+      GOTRUE_EXTERNAL_AZURE_SECRET: "${AZURE_SECRET:-}"
+      GOTRUE_EXTERNAL_AZURE_URL: "${AZURE_URL:-}"
+      GOTRUE_EXTERNAL_AZURE_REDIRECT_URI: "${SUPABASE_URL}/auth/v1/callback"
+    restart: unless-stopped
+    networks: [intern]
+
+  rest:
+    image: postgrest/postgrest:v16.5
+    <<: *geheim
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      PGRST_JWT_SECRET: "@/geheim/jwt"
+      PGRST_DB_URI: "@/geheim/rest_db"
+      PGRST_DB_SCHEMAS: "${APP_SCHEMA},public"
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+    restart: unless-stopped
+    networks: [intern]
+
+  gateway: # ein Eingang wie bei Supabase: /auth/v1 → Login, /rest/v1 → Daten-API
+    image: caddy:2-alpine
+    depends_on: [auth, rest]
+    configs:
+      - source: gateway
+        target: /etc/caddy/Caddyfile
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETZ:-public}"
+      - "traefik.http.routers.${APP}-staging-api.rule=Host(`${SUPABASE_HOST:?SUPABASE_HOST fehlt}`)"
+      - "traefik.http.routers.${APP}-staging-api.entrypoints=${TRAEFIK_EINGANG:-websecure}"
+      - "traefik.http.routers.${APP}-staging-api.tls=true"
+      - "traefik.http.routers.${APP}-staging-api.tls.certresolver=${TRAEFIK_ZERTIFIKAT:-mytlschallenge}"
+      - "traefik.http.services.${APP}-staging-api.loadbalancer.server.port=8000"
+    restart: unless-stopped
+    networks: [intern, traefik]
+
+  app:
+    image: "ghcr.io/${REPO:?REPO fehlt}:staging"
+    depends_on:
+      db: { condition: service_healthy }
+      gateway: { condition: service_started }
+    # Wie die CMD im Dockerfile, plus Schlüssel aus dem Volume: erst migrieren (eigener Nutzer), dann die App.
+    entrypoint:
+      [
+        "sh",
+        "-c",
+        ". /geheim/env && export SUPABASE_PUBLISHABLE_KEY=$$ANON_KEY MIGRATE_DATABASE_URL=postgres://$${APP_SCHEMA}_migrate:$$DB_PASSWORT@db:5432/postgres && sh /app/migrate.sh && unset MIGRATE_DATABASE_URL DB_PASSWORT JWT_SECRET SERVICE_KEY && exec node server.js",
+      ]
+    environment:
+      APP_ENV: staging
+      APP_SCHEMA: "${APP_SCHEMA}"
+      SUPABASE_URL: "${SUPABASE_URL}"
+    volumes:
+      - "geheim:/geheim:ro"
+      - "backup:/backup"
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "com.centurylinklabs.watchtower.scope=${APP}-staging"
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETZ:-public}"
+      - "traefik.http.routers.${APP}-staging.rule=Host(`${APP_HOST}`) && !Method(`TRACE`)" # TRACE nie bis zur App (Next.js antwortet sonst 500)
+      - "traefik.http.routers.${APP}-staging.entrypoints=${TRAEFIK_EINGANG:-websecure}"
+      - "traefik.http.routers.${APP}-staging.tls=true"
+      - "traefik.http.routers.${APP}-staging.tls.certresolver=${TRAEFIK_ZERTIFIKAT:-mytlschallenge}"
+      - "traefik.http.routers.${APP}-staging.middlewares=${APP}-staging-noindex"
+      - "traefik.http.middlewares.${APP}-staging-noindex.headers.customresponseheaders.X-Robots-Tag=noindex, nofollow"
+      - "traefik.http.middlewares.${APP}-staging-noindex.headers.stsSeconds=31536000" # HSTS: Browser nur noch per https
+      - "traefik.http.middlewares.${APP}-staging-noindex.headers.stsIncludeSubdomains=false"
+      - "traefik.http.services.${APP}-staging.loadbalancer.server.port=3000"
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+    restart: unless-stopped
+    networks: [intern, traefik]
+
+  nachzieher:
+    # Eigener kleiner Watchtower nur für diesen Stack (Scope): zieht den Tag `staging` jede Minute nach. Der Watchtower des
+    # Servers (ohne Scope) lässt Container mit Scope in Ruhe; Git-Polling/Webhook von Portainer CE holen kein neues Image.
+    image: nickfedor/watchtower:latest
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_SCOPE: "${APP}-staging"
+      WATCHTOWER_POLL_INTERVAL: "60"
+      WATCHTOWER_CLEANUP: "true"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    labels:
+      - "com.centurylinklabs.watchtower.scope=${APP}-staging"
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+configs:
+  gateway:
+    content: |
+      :8000 {
+        handle_path /auth/v1/* {
+          reverse_proxy auth:9999
+        }
+        handle_path /rest/v1/* {
+          reverse_proxy rest:3000
+        }
+        respond 404
+      }
+  fabrik_rollen: # Passwörter der Supabase-Rollen + Migrations-Nutzer mit genau den Rechten aus dem Profil
+    content: |
+      #!/bin/sh
+      set -e
+      . /geheim/env
+      psql -v ON_ERROR_STOP=1 -U supabase_admin -d postgres <<SQL # nur supabase_admin darf Supabase-Rollen ändern
+      alter user authenticator with password '$$DB_PASSWORT';
+      alter user supabase_auth_admin with password '$$DB_PASSWORT';
+      create role $${APP_SCHEMA}_migrate login password '$$DB_PASSWORT';
+      create schema $${APP_SCHEMA} authorization $${APP_SCHEMA}_migrate;
+      grant usage on schema auth to $${APP_SCHEMA}_migrate;
+      grant references (id) on auth.users to $${APP_SCHEMA}_migrate;
+      grant anon, authenticated to $${APP_SCHEMA}_migrate;
+      grant create on database postgres to $${APP_SCHEMA}_migrate;
+      grant usage on schema $${APP_SCHEMA} to anon, authenticated, service_role;
+      SQL
+
+volumes:
+  geheim:
+  db:
+  backup:
+
+networks:
+  intern:
+  traefik:
+    name: "${TRAEFIK_NETZ:-public}"
+    external: true

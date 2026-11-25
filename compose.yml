@@ -1,0 +1,69 @@
+# Vorlage: compose.yml ins Repo (Gerüst-Schritt) = Live. Nur die App; Datenbank und Login sind die vorhandene
+# Supabase des Servers (eigenes Schema je App, Einrichtungs-SQL im Profil). Anlegen einmal je Projekt vor dem ersten
+# Promote: Portainer → Stacks → Add stack · Build method Repository · Repository URL https://github.com/<repo> · Reference refs/heads/main
+# · Compose path compose.yml · Environment variables · GitOps-Updates/Polling AUS (Polling deployt zu früh) · Deploy the stack.
+# Privates Repo: in Portainer „Authentication“ mit Lesetoken. Danach zieht der Dienst `nachzieher`
+# den Tag `prod` binnen einer Minute nach Promote; den Tag setzt nur promote.yml. Notfall ohne GitHub: IMAGE_TAG=sha-<alter Commit> eintragen, neu starten.
+#   APP, APP_SCHEMA, REPO, APP_HOST, SUPABASE_URL (öffentliche Adresse der Server-Supabase)
+#   Geheim (in Portainer als Umgebungsvariable, nie im Repo): SUPABASE_PUBLISHABLE_KEY, MIGRATE_DATABASE_URL
+#   optional: TRAEFIK_NETZ (public), TRAEFIK_EINGANG (websecure), TRAEFIK_ZERTIFIKAT (Let's-Encrypt-Resolver des Traefik, mytlschallenge), SUPABASE_NETZ (Netz der Server-Supabase, für db:5432)
+name: "${APP:?APP fehlt}"
+
+services:
+  app:
+    image: "ghcr.io/${REPO:?REPO fehlt}:${IMAGE_TAG:-prod}"
+    environment:
+      APP_ENV: prod
+      APP_SCHEMA: "${APP_SCHEMA:?APP_SCHEMA fehlt}"
+      SUPABASE_URL: "${SUPABASE_URL:?SUPABASE_URL fehlt}"
+      SUPABASE_PUBLISHABLE_KEY: "${SUPABASE_PUBLISHABLE_KEY:?SUPABASE_PUBLISHABLE_KEY fehlt}"
+      MIGRATE_DATABASE_URL: "${MIGRATE_DATABASE_URL:?MIGRATE_DATABASE_URL fehlt (eigener Nutzer <app>_migrate)}"
+    volumes:
+      - "backup:/backup" # Sicherung des App-Schemas vor jeder Migration (scripts/migrate.sh, behält 5)
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "com.centurylinklabs.watchtower.scope=${APP}"
+      - "traefik.enable=true"
+      - "traefik.docker.network=${TRAEFIK_NETZ:-public}"
+      - "traefik.http.routers.${APP}.rule=Host(`${APP_HOST:?APP_HOST fehlt}`) && !Method(`TRACE`)" # TRACE nie bis zur App (Next.js antwortet sonst 500)
+      - "traefik.http.routers.${APP}.middlewares=${APP}-sicher"
+      - "traefik.http.middlewares.${APP}-sicher.headers.stsSeconds=31536000" # HSTS: Browser nur noch per https
+      - "traefik.http.middlewares.${APP}-sicher.headers.stsIncludeSubdomains=false"
+      - "traefik.http.routers.${APP}.entrypoints=${TRAEFIK_EINGANG:-websecure}"
+      - "traefik.http.routers.${APP}.tls=true"
+      - "traefik.http.routers.${APP}.tls.certresolver=${TRAEFIK_ZERTIFIKAT:-mytlschallenge}"
+      - "traefik.http.services.${APP}.loadbalancer.server.port=3000"
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 768M }
+    restart: unless-stopped
+    networks: [traefik, supabase]
+
+  nachzieher:
+    # Eigener kleiner Watchtower nur für diesen Stack (Scope): zieht den Tag `prod` jede Minute nach. Der Watchtower des
+    # Servers (ohne Scope) lässt Container mit Scope in Ruhe; Git-Polling/Webhook von Portainer CE holen kein neues Image.
+    image: nickfedor/watchtower:latest
+    restart: unless-stopped
+    environment:
+      WATCHTOWER_SCOPE: "${APP}"
+      WATCHTOWER_POLL_INTERVAL: "60"
+      WATCHTOWER_CLEANUP: "true"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    labels:
+      - "com.centurylinklabs.watchtower.scope=${APP}"
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+volumes:
+  backup:
+
+networks:
+  traefik:
+    name: "${TRAEFIK_NETZ:-public}"
+    external: true
+  supabase:
+    name: "${SUPABASE_NETZ:-supabase_default}"
+    external: true

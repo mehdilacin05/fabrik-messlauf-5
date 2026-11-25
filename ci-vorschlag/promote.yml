@@ -1,0 +1,81 @@
+# Ziel: .github/workflows/promote.yml. Nur Menschen starten ihn (der Agent hat kein actions:write).
+# Setzt das schon gebaute und geprüfte Image per Digest auf `prod`. Kein Neubau.
+# Rollback = denselben Workflow mit dem SHA des letzten guten Stands starten.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Voller Commit-SHA (40 Zeichen) des Stands für prod. Rollback: alten SHA eingeben."
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      packages: write
+      actions: read
+    env:
+      SHA: ${{ inputs.sha }} # Eingabe nur über env, nie direkt in run:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Eingabe prüfen
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Bitte den vollen 40-stelligen SHA eingeben"; exit 1; }
+      - name: ci für diesen Commit auf main grün?
+        run: |
+          c=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --event push \
+                --json conclusion --jq '.[0].conclusion // empty')
+          [ "$c" = "success" ] || { echo "::error::ci für $SHA: ${c:-kein Lauf}"; exit 1; }
+      - name: App-Test auf Staging für genau diesen Commit grün? (übersprungen = rot)
+        run: |
+          id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$SHA" --event push --json databaseId --jq '.[0].databaseId')
+          e=$(gh run view "$id" -R "$GITHUB_REPOSITORY" --json jobs --jq '.jobs[] | select(.name=="staging-e2e") | .conclusion')
+          [ "$e" = "success" ] || { echo "::error::staging-e2e für $SHA: ${e:-fehlt}. Ohne grünen App-Test kein prod (STAGING_URL gesetzt?)"; exit 1; }
+      - name: crane installieren (Release + Prüfsumme; setzt den Tag ohne Neubau)
+        env:
+          CRANE_VERSION: 0.22.1
+        run: |
+          case "$(uname -m)" in x86_64) a=x86_64 ;; aarch64) a=arm64 ;; *) echo "::error::$(uname -m)"; exit 1 ;; esac
+          u="https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}"
+          f="go-containerregistry_Linux_${a}.tar.gz"
+          cd "$RUNNER_TEMP" && curl -fsSLO "$u/$f" && curl -fsSLO "$u/checksums.txt"
+          grep " $f\$" checksums.txt | sha256sum -c -
+          tar -xzf "$f" crane && echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Digest von sha-<commit> auf prod setzen
+        run: |
+          export DOCKER_CONFIG="$RUNNER_TEMP/docker"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | crane auth login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # Digest des obersten Manifests (bei Multi-Arch der Index), ohne Plattform-Auswahl: gleich sha256 der Rohdaten.
+          OLD=$(crane digest "$IMAGE:prod" 2>/dev/null || echo "keiner")
+          DIGEST=$(crane digest "$IMAGE:sha-$SHA")
+          # Nur den Tag setzen: gleiche Manifest-Bytes, gleicher Digest, alle Prozessoren. Nicht
+          # `skopeo copy --all --preserve-digests`: das skopeo des Runners bricht beim OCI-Index von crane ab (Probe 5).
+          crane tag "$IMAGE@$DIGEST" prod
+          [ "$(crane digest "$IMAGE:prod")" = "$DIGEST" ] || { echo "::error::prod hat nicht den Digest $DIGEST"; exit 1; }
+          {
+            echo "prod = sha-$SHA ($DIGEST)"
+            echo "vorher: $OLD"
+            echo "Zeit: $(date -u +%FT%TZ), ausgelöst von $GITHUB_ACTOR"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke - prod meldet diesen Commit
+        if: vars.PROD_URL != ''
+        env:
+          URL: ${{ vars.PROD_URL }}
+        run: |
+          for _ in $(seq 60); do
+            curl -fsS "$URL/health" | grep -q "$SHA" && exit 0
+            sleep 10
+          done
+          echo "::error::prod meldet $SHA nach 10 min nicht. Rollback: promote mit altem SHA"; exit 1

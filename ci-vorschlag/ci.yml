@@ -1,0 +1,313 @@
+# Ziel: .github/workflows/ci.yml. Regeln: Skill software-projekt, references/cicd.md. Wörtlich übernehmen.
+# Werkzeuge per Release-Binärdatei mit geprüfter Prüfsumme (amd64 und arm64), nie per go install oder Setup-Action.
+# PR: check → image-bau (je Prozessor amd64 + arm64 nativ: Build + Trivy) → image (Sammel-Check) → app-e2e (Image für
+# den Prozessor des Servers gegen Wegwerf-Supabase). main: zusätzlich publish (Multi-Arch-Index sha-<commit> + staging)
+# → staging-e2e. Promote verlangt staging-e2e grün für den SHA (übersprungen = rot).
+# Repo-Variablen: SERVER_RUNNER (ARM-Server: ubuntu-24.04-arm; app-e2e läuft dort), NUR_SERVER_ARCH=ja (nur dieser Prozessor).
+# Job-Namen `check`, `image`, `app-e2e` sind Pflicht-Checks im Ruleset: nicht umbenennen.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10 # Commit-Stage: Ziel unter 5 Minuten
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # gitleaks prüft die ganze Historie
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: gitleaks (Release + Prüfsumme)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          case "$(uname -m)" in x86_64) a=x64 ;; aarch64) a=arm64 ;; *) echo "::error::$(uname -m)"; exit 1 ;; esac
+          u="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          f="gitleaks_${GITLEAKS_VERSION}_linux_${a}.tar.gz"
+          cd "$RUNNER_TEMP" && curl -fsSLO "$u/$f" && curl -fsSLO "$u/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " $f\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "$f" gitleaks && echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - run: npm ci
+      - run: make check # secrets, format, lint, typecheck, test (frische Test-DB mit Migrationen + Seed)
+      - run: make audit
+
+  image-bau:
+    needs: check
+    name: image-bau (${{ matrix.runner }})
+    # Standard: beide Prozessoren, je nativ auf eigenem Runner. Repo-Variable NUR_SERVER_ARCH=ja: nur der des Servers.
+    strategy:
+      matrix:
+        runner: ${{ fromJSON(vars.NUR_SERVER_ARCH == 'ja' && format('["{0}"]', vars.SERVER_RUNNER || 'ubuntu-24.04') || '["ubuntu-24.04", "ubuntu-24.04-arm"]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Prozessor dieses Runners
+        id: arch
+        run: |
+          case "$(uname -m)" in x86_64) a=amd64 ;; aarch64) a=arm64 ;; *) echo "::error::$(uname -m)"; exit 1 ;; esac
+          echo "arch=$a" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build (genau einmal je Prozessor, als OCI-Verzeichnis)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          provenance: false
+          sbom: false
+          outputs: type=oci,dest=/tmp/bau/image-${{ steps.arch.outputs.arch }},tar=false
+          build-args: GIT_SHA=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=image-${{ steps.arch.outputs.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ steps.arch.outputs.arch }}
+      - name: Trivy installieren (Release + Prüfsumme; die Setup-Action scheitert auf ARM ohne Cache)
+        env:
+          TRIVY_VERSION: 0.70.0
+        run: |
+          case "$(uname -m)" in x86_64) a=64bit ;; aarch64) a=ARM64 ;; *) echo "::error::$(uname -m)"; exit 1 ;; esac
+          u="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          f="trivy_${TRIVY_VERSION}_Linux-${a}.tar.gz"
+          cd "$RUNNER_TEMP" && curl -fsSLO "$u/$f" && curl -fsSLO "$u/trivy_${TRIVY_VERSION}_checksums.txt"
+          grep " $f\$" "trivy_${TRIVY_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "$f" trivy && echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Trivy (Abbruch bei CRITICAL/HIGH, je Prozessor)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          skip-setup-trivy: true
+          input: /tmp/bau/image-${{ steps.arch.outputs.arch }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Artefakt für app-e2e und publish
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ steps.arch.outputs.arch }}
+          path: /tmp/bau # enthält den Ordner image-<arch>: so landet jeder Prozessor beim Laden im eigenen Ordner
+          retention-days: 1
+          compression-level: 0
+
+  image: # Pflicht-Check im Ruleset: grün nur, wenn jeder Prozessor gebaut und von Trivy geprüft ist
+    if: ${{ !cancelled() }}
+    needs: image-bau
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Alle Prozessoren gebaut und geprüft?
+        env:
+          ERGEBNIS: ${{ needs.image-bau.result }}
+        run: |
+          [ "$ERGEBNIS" = "success" ] || { echo "::error::image-bau: $ERGEBNIS"; exit 1; }
+
+  app-e2e:
+    needs: image
+    runs-on: ${{ vars.SERVER_RUNNER || 'ubuntu-24.04' }} # Prozessor des Servers: ARM-Server → Repo-Variable SERVER_RUNNER=ubuntu-24.04-arm
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read # e2e_auswahl.py: gemergte Schritte
+    env:
+      BASE_URL: http://localhost:3000
+    steps:
+      - name: Prozessor dieses Runners
+        id: arch
+        run: |
+          case "$(uname -m)" in x86_64) a=amd64 ;; aarch64) a=arm64 ;; *) echo "::error::$(uname -m)"; exit 1 ;; esac
+          echo "arch=$a" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Supabase CLI (Release + Prüfsumme)
+        env:
+          SUPABASE_CLI_VERSION: 3.2.0
+        run: |
+          case "$(uname -m)" in x86_64) a=amd64 ;; aarch64) a=arm64 ;; *) echo "::error::$(uname -m)"; exit 1 ;; esac
+          u="https://github.com/supabase/cli/releases/download/v${SUPABASE_CLI_VERSION}"
+          f="supabase_${SUPABASE_CLI_VERSION}_linux_${a}.tar.gz"
+          cd "$RUNNER_TEMP" && curl -fsSLO "$u/$f" && curl -fsSLO "$u/checksums.txt"
+          grep " $f\$" checksums.txt | sha256sum -c -
+          tar -xzf "$f" supabase && echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Wegwerf-Supabase mit allen Migrationen und Seed
+        run: |
+          supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor
+          supabase status -o env | sed -n 's/^\(API_URL\|ANON_KEY\|PUBLISHABLE_KEY\|SERVICE_ROLE_KEY\|SECRET_KEY\)=/E2E_\1=/p' | tr -d '"' >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image-${{ steps.arch.outputs.arch }} # Image für den Prozessor des Servers
+          path: /tmp/bau
+      - name: Genau das geprüfte Image starten
+        env:
+          ARCH: ${{ steps.arch.outputs.arch }}
+        run: |
+          skopeo copy "oci:/tmp/bau/image-$ARCH" docker-daemon:app:e2e
+          docker run -d --name app --network host \
+            -e MIGRATE=aus -e SUPABASE_URL="$E2E_API_URL" -e SUPABASE_PUBLISHABLE_KEY="${E2E_PUBLISHABLE_KEY:-$E2E_ANON_KEY}" app:e2e
+          for _ in $(seq 60); do curl -fsS "$BASE_URL/health" >/dev/null && exit 0; sleep 2; done
+          docker logs app; echo "::error::App wird nicht gesund"; exit 1
+      - run: npm ci && npx playwright install --with-deps chromium
+      - name: Akzeptanz- und E2E-Tests gegen die laufende App (nur gemergte Schritte + dieser)
+        env:
+          SUPABASE_URL: ${{ env.E2E_API_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ env.E2E_PUBLISHABLE_KEY || env.E2E_ANON_KEY }} # Testhelfer melden sich an
+          SUPABASE_SECRET_KEY: ${{ env.E2E_SECRET_KEY || env.E2E_SERVICE_ROLE_KEY }} # nur Wegwerf-Stack: Testnutzer anlegen
+          GH_TOKEN: ${{ github.token }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          auswahl=$(python3 -I scripts/e2e_auswahl.py)
+          make e2e-ohne-fallback E2E_ARGS="$auswahl"
+      - name: Wackelnde Tests (erst rot, bei der Wiederholung grün) melden
+        if: ${{ !cancelled() }}
+        run: |
+          [ -f e2e-ergebnis.json ] || { echo "kein e2e-ergebnis.json (Makefile-Ziel e2e aus der Vorlage?)"; exit 0; }
+          python3 -I - e2e-ergebnis.json > wackelnde-tests.txt <<'PY'
+          import json, sys
+          def gehe(suite, pfad):
+              for spec in suite.get("specs") or []:
+                  if any(t.get("status") == "flaky" for t in spec.get("tests") or []):
+                      print(" › ".join([p for p in pfad if p] + [str(spec.get("title", "?"))]).replace("\n", " "))
+              for s in suite.get("suites") or []:
+                  gehe(s, pfad + [str(s.get("title", ""))])
+          for s in json.load(open(sys.argv[1], encoding="utf-8")).get("suites") or []:
+              gehe(s, [str(s.get("title", ""))])
+          PY
+          sort -u -o wackelnde-tests.txt wackelnde-tests.txt
+          [ -s wackelnde-tests.txt ] || { rm -f wackelnde-tests.txt; exit 0; }
+          while IFS= read -r t; do echo "::warning title=Wackelnder Test::${t//%/%25}"; done < wackelnde-tests.txt
+          { echo "### Wackelnde Tests (Bug-Issue legt die Steuerung an)"; sed 's/^/- /' wackelnde-tests.txt; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Liste wackelnder Tests für die Steuerung
+        if: ${{ !cancelled() && hashFiles('wackelnde-tests.txt') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wackelnde-tests
+          path: wackelnde-tests.txt
+          retention-days: 14
+          overwrite: true
+      - if: failure()
+        run: docker logs app 2>&1 | tail -200
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report-app
+          path: playwright-report
+          retention-days: 7
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [image, app-e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+      pull-requests: read
+    steps:
+      # Kein Checkout: der Job mit Schreibrecht führt keinen Repo-Code aus.
+      - name: Nur Commits aus einem PR, den ein Mensch gemergt hat
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr=""
+          for _ in 1 2 3 4 5 6; do
+            pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].number // empty')
+            [ -n "$pr" ] && break
+            sleep 10
+          done
+          [ -n "$pr" ] || { echo "::error::$GITHUB_SHA stammt aus keinem PR"; exit 1; }
+          by=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.merged_by.type')
+          [ "$by" = "User" ] || { echo "::error::PR #$pr nicht von einem Menschen gemergt ($by)"; exit 1; }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+          path: /tmp/oci
+          merge-multiple: true # je Prozessor ein Ordner /tmp/oci/image-<arch>
+      - name: crane installieren (Release + Prüfsumme; baut den Multi-Arch-Index)
+        env:
+          CRANE_VERSION: 0.22.1
+        run: |
+          case "$(uname -m)" in x86_64) a=x86_64 ;; aarch64) a=arm64 ;; *) echo "::error::$(uname -m)"; exit 1 ;; esac
+          u="https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}"
+          f="go-containerregistry_Linux_${a}.tar.gz"
+          cd "$RUNNER_TEMP" && curl -fsSLO "$u/$f" && curl -fsSLO "$u/checksums.txt"
+          grep " $f\$" checksums.txt | sha256sum -c -
+          tar -xzf "$f" crane && echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Push nach GHCR (je Prozessor, dann Index sha-<commit> und staging, gleicher Digest)
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          export REGISTRY_AUTH_FILE="$RUNNER_TEMP/auth.json" DOCKER_CONFIG="$RUNNER_TEMP/docker"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$TOKEN" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          echo "$TOKEN" | crane auth login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          m=()
+          for d in /tmp/oci/image-*; do
+            a="${d##*/image-}"
+            skopeo copy --all --preserve-digests "oci:$d" "docker://$IMAGE:sha-$GITHUB_SHA-$a"
+            m+=(-m "$IMAGE@$(crane digest "$IMAGE:sha-$GITHUB_SHA-$a")")
+            echo "sha-$GITHUB_SHA-$a" >> "$RUNNER_TEMP/arten"
+          done
+          [ ${#m[@]} -gt 0 ] || { echo "::error::kein Image-Artefakt"; exit 1; }
+          crane index append "${m[@]}" -t "$IMAGE:sha-$GITHUB_SHA"
+          DIGEST=$(crane digest "$IMAGE:sha-$GITHUB_SHA")
+          # Nur den Tag setzen: gleiche Manifest-Bytes, gleicher Digest. Nicht `skopeo copy --all --preserve-digests`:
+          # das skopeo des Runners bricht beim OCI-Index von crane ab („Manifest list must be converted …“, Probe 5).
+          crane tag "$IMAGE@$DIGEST" staging
+          [ "$(crane digest "$IMAGE:staging")" = "$DIGEST" ] || { echo "::error::staging hat nicht den Digest $DIGEST"; exit 1; }
+          echo "staging = sha-$GITHUB_SHA ($DIGEST), Prozessoren: $(sed 's/.*-//' "$RUNNER_TEMP/arten" | paste -sd ' ')" >> "$GITHUB_STEP_SUMMARY"
+
+  staging-e2e:
+    if: github.event_name == 'push' && vars.STAGING_URL != ''
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      BASE_URL: ${{ vars.STAGING_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci && npx playwright install --with-deps chromium
+      - name: Warten, bis Staging diesen Commit meldet (Watchtower zieht selbst)
+        run: |
+          for _ in $(seq 60); do
+            curl -fsS "$BASE_URL/health" | grep -q "$GITHUB_SHA" && exit 0
+            sleep 10
+          done
+          echo "::error::Staging meldet $GITHUB_SHA nach 10 min nicht"; exit 1
+      - run: make e2e E2E_ARGS="--grep @smoke" # Staging: nur Rauchtests (echte Anmeldung ist dort nicht automatisierbar)
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 7
