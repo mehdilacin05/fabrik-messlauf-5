@@ -114,9 +114,14 @@ e2e-ohne-fallback:
 
 # Gerüst: /health gegen Wegwerf-Postgres und -PostgREST (scripts/health-test.sh). Image wie `make image`.
 REST_IMAGE ?= postgrest/postgrest:v16.5
+GATEWAY_IMAGE ?= caddy:2-alpine
 .PHONY: health-test hooks
 health-test: image ## 200 mit Commit-SHA mit Datenbank, 503 ohne Datenbank und bei nicht freigegebenem Schema
-	IMAGE=$(notdir $(CURDIR)):lokal GIT_SHA=$$(git rev-parse HEAD) TESTDB_IMAGE=$(TESTDB_IMAGE) REST_IMAGE=$(REST_IMAGE) bash scripts/health-test.sh
+	IMAGE=$(notdir $(CURDIR)):lokal GIT_SHA=$$(git rev-parse HEAD) TESTDB_IMAGE=$(TESTDB_IMAGE) REST_IMAGE=$(REST_IMAGE) GATEWAY_IMAGE=$(GATEWAY_IMAGE) bash scripts/health-test.sh
 
 hooks: ## einmal je Klon: gitleaks vor jedem Push (.githooks/pre-push)
 	git config core.hooksPath .githooks
+
+# Node 26 (Active LTS) ist allein ~240 MB groß (Binärdatei 141 MB auf arm64), gemessen im Gerüst: Image 319 MB. Die
+# Vorlagengrenze 250 MB galt für kleinere Node-Versionen; hier gilt diese Zeile (spätere Zuweisung gewinnt).
+IMAGE_MAX_MB = 350
