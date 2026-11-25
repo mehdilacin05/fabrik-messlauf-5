@@ -1,6 +1,6 @@
 // Hilfen für die Akzeptanztests (Planer-Datei, für den Bauer gesperrt).
 // Umgebung (Wegwerf-Stack von `make e2e`): BASE_URL, SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY,
-// SUPABASE_SECRET_KEY, APP_SCHEMA. Nutzer entstehen per auth.admin.createUser; Anmeldung per Passwort
+// SUPABASE_SECRET_KEY, APP_SCHEMA; die App braucht dort VERWALTUNG_START_EMAIL (sonst /health 503). Nutzer entstehen per auth.admin.createUser; Anmeldung per Passwort
 // (nur im Wegwerf-Stack an), Rechte kommen wie im Betrieb aus `person` und `app_metadata`.
 // Vorbereitung schreibt mit der Servicerolle direkt in die Tabellen; geprüft wird nur über die Oberfläche.
 //
@@ -15,7 +15,9 @@
 //                    data-testid="historie": je Ereignis eine Zeile mit Art, Person, <time>
 //   /kategorien      Feld „Name“, Knopf „Kategorie anlegen“, Liste der Kategorien
 //   /personen        Felder „Name“, „Firmen-Mail“, Knopf „Person anlegen“; je Person eine Tabellenzeile mit
-//                    Knöpfen „Sperren“, „Entsperren“, „Anonymisieren“
+//                    Knöpfen „Sperren“, „Entsperren“, „Anonymisieren“; neben „Anonymisieren“ das Feld „Name zur Bestätigung“
+//                    (Knopf wirkt nur bei richtigem Namen, Fehler name_falsch → „Name stimmt nicht“)
+//   Auswahl „Person“ listet alle Personen, auch gesperrte (Option = Name); die Ausgabe an sie scheitert mit person_gesperrt
 //   /meine-geraete   Mitarbeiter: eigene aktuelle Geräte (Bezeichnung, Seriennummer); leer: „Keine Geräte“
 //   Fehler           role="alert" mit Klartext: nicht_im_lager → „nicht im Lager“, seriennummer_vergeben →
 //                    „Seriennummer ist schon vergeben“, email_vergeben → „Mail ist schon vergeben“,

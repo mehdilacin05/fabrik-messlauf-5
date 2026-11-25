@@ -17,5 +17,8 @@ Beim ersten Start gibt es niemanden mit Verwaltungsrecht, der andere benennen k�
 ## Entscheidung
 A, weil Q1 keinen Wettlauf um Rechte erlaubt und Frage 2 die einrichtende Person nennt. Verworfen: B wegen Wettlauf, C wegen Handgriff in Produktion.
 
+## Umsetzung
+Die Start-Mail geht nicht als Parameter an die Datenbank (sonst könnte jeder Mandanten-Nutzer `person_verknuepfen` mit seiner Mail aufrufen). Die Migration schreibt `VERWALTUNG_START_EMAIL` beim Containerstart mit `MIGRATE_DATABASE_URL` in eine Tabelle ohne Rechte für `anon` und `authenticated`; `person_verknuepfen()` hat keinen Parameter und nimmt die Mail aus `auth.users` zu `auth.uid()`.
+
 ## Folgen
 Leichter: Einrichtung in einem Schritt, Verhalten testbar. Schwerer: die Variable ist nach der Einrichtung wirkungslos und kann bleiben; Wechsel der Verwaltung danach nur in der App. Neu entscheiden, wenn Rollen aus Microsoft-Gruppen kommen sollen.

@@ -47,7 +47,12 @@ test('@schritt-6 Anonymisieren ersetzt Name und Mail, die Historie bleibt', asyn
   await admin().from('geraet').update({ status: 'lager', inhaber_id: null }).eq('id', g.id);
   await admin().from('person').update({ gesperrt: true }).eq('id', p.id);
   await page.goto('/personen');
-  await page.getByRole('row', { name: new RegExp(p.name) }).getByRole('button', { name: 'Anonymisieren' }).click();
+  const zeile = page.getByRole('row', { name: new RegExp(p.name) });
+  await zeile.getByLabel('Name zur Bestätigung').fill('falsch');
+  await zeile.getByRole('button', { name: 'Anonymisieren' }).click();
+  await expect(page.getByRole('alert')).toContainText('Name stimmt nicht');
+  await zeile.getByLabel('Name zur Bestätigung').fill(p.name);
+  await zeile.getByRole('button', { name: 'Anonymisieren' }).click();
   await expect(page.getByText(p.name)).toHaveCount(0);
   await expect(page.getByText(p.email)).toHaveCount(0);
   await page.goto(`/geraete/${g.id}`);

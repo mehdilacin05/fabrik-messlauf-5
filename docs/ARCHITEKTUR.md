@@ -114,7 +114,9 @@ erDiagram
 | `geraet` | Gerät mit aktuellem Status und Inhaber | `inhaber_id` | nur Verwaltung; Mitarbeiter über `meine_geraete()` (nur Bezeichnung, Kategorie, Seriennummer, seit) | nur über DB-Funktionen (E1), keine direkte Insert/Update-Regel | stark |
 | `geraet_ereignis` | Historie, nur anhängend | `person_id`, `ausgefuehrt_von` | nur Verwaltung | nur DB-Funktionen; Trigger verbietet Update, Delete, Truncate | stark |
 
-**Regeln in der Datenbank (Q2):** Check `(status = 'ausgegeben') = (inhaber_id is not null)`; `inhaber_id` ist eine Spalte, also höchstens ein Besitzer; Unique-Index auf `lower(seriennummer)` über alle Geräte, auch ausgemusterte; Seriennummer per Trigger unveränderlich. Ausgabe ist ein bedingtes Update `… where id = $1 and status = 'lager'`; 0 Zeilen = Konflikt. Gesperrte Personen bekommen nichts. Löschen gibt es nicht; Anonymisieren setzt `name = 'Gelöscht'`, `email = null` (Einbahnstraße, nur gesperrt und ohne Geräte).
+**Regeln in der Datenbank (Q2):** Check `(status = 'ausgegeben') = (inhaber_id is not null)`; `inhaber_id` ist eine Spalte, also höchstens ein Besitzer; Unique-Index auf `lower(seriennummer)` über alle Geräte, auch ausgemusterte; Seriennummer per Trigger unveränderlich. Ausgabe ist ein bedingtes Update `… where id = $1 and status = 'lager'`; 0 Zeilen = Konflikt. Gesperrte Personen bekommen nichts. Löschen gibt es nicht; Anonymisieren setzt `name = 'Gelöscht'`, `email = null`, `auth_user_id = null` und löscht das Konto im Login-Dienst samt Identitäten (Einbahnstraße, nur gesperrt und ohne Geräte; Entsperren einer anonymisierten Person → `anonymisiert`; Klick nur nach Eintippen des Namens als Bestätigung).
+
+**Rechte auf Funktionen (Q1):** Alle DB-Funktionen sind `security definer` mit festem `search_path` und prüfen Rolle und Sperre selbst (aus `auth.uid()`, nie aus einem Parameter). `revoke execute … from public, anon` und `alter default privileges … revoke execute` im Schema; `authenticated` darf nur die Positivliste aufrufen (`meine_geraete`, `person_verknuepfen` und die Verwaltungsfunktionen, die intern `nicht_erlaubt` liefern). Tabellen: keine Insert/Update/Delete-Regel für `authenticated`; die Servicerolle benutzt nur die Testvorbereitung, nie die App. Pflichtfelder: `geraet_ereignis.ausgefuehrt_von` darf null sein (null = Vorbereitung durch die Servicerolle, die Funktionen setzen es immer), `zeitpunkt` hat Standard `now()`.
 
 **Indizes:** `geraet(inhaber_id)`, `geraet(kategorie_id)`, `geraet(status)`, `geraet_ereignis(geraet_id, zeitpunkt)`, `geraet_ereignis(person_id)`, `geraet_ereignis(ausgefuehrt_von)`, `person(auth_user_id)` unique, `person(lower(email))` unique. Suche nach Seriennummer: Präfix über den Unique-Index; `pg_trgm` erst mit Auslöser (Stufe 9).
 
@@ -130,8 +132,8 @@ erDiagram
 | `kategorieAnlegen`, `kategorieUmbenennen` | Verwaltung | `name_vergeben`, `nicht_gefunden` |
 | `personAnlegen` (Name, Firmen-Mail) | Verwaltung | `email_vergeben` |
 | `personRolleSetzen` | Verwaltung | `nicht_gefunden`, `letzte_verwaltung` |
-| `personSperren`, `personEntsperren` | Verwaltung | `nicht_gefunden`, `hat_geraete`, `letzte_verwaltung` |
-| `personAnonymisieren` | Verwaltung | `nicht_gefunden`, `nicht_gesperrt`, `hat_geraete` |
+| `personSperren`, `personEntsperren` | Verwaltung | `nicht_gefunden`, `hat_geraete`, `letzte_verwaltung`, `anonymisiert` |
+| `personAnonymisieren` | Verwaltung | `nicht_gefunden`, `nicht_gesperrt`, `hat_geraete`, `name_falsch` |
 | Lesen: Geräteliste (Filter, Suche, `limit` 50, max. 200), Gerät mit Historie, Personen, Kategorien | Verwaltung | `nicht_erlaubt` |
 | Lesen: `meine_geraete()` | jede verknüpfte, nicht gesperrte Person | – (leer, wenn nichts ausgegeben) |
 | `GET /auth/callback` (Code-Tausch, dann `person_verknuepfen()`) | Login | `kein_zugang` (keine Person zur Mail, gesperrt oder kein Microsoft-Konto) |
@@ -228,6 +230,8 @@ ASVS-Stufe 1, weil intern, nicht heikel, keine Zahlung, keine öffentliche Regis
 - Sitzung auf dem Server: umgesetzt durch `getClaims()`/`getUser()` im Action-Umschlag und in `/auth/callback`; Test „ohne Login → `nicht_angemeldet`“ je Action.
 - Rechte auf dem Server und je Zeile: umgesetzt durch Umschlag (Rolle aus `person`, nie vom Client) plus RLS an jeder Tabelle; Test „Mitarbeiter A ruft Verwaltungs-Action / Gerät von B“ → `nicht_erlaubt`, Daten unverändert (Q1).
 - BOLA: jede `geraet_id`/`person_id` wird in der DB-Funktion gegen die Rolle geprüft; Mitarbeiter haben keine Leseregel auf `geraet`.
+- Direkter Weg Browser → PostgREST: Token liegt lesbar im Cookie, der Publishable Key im Bündel; jede DB-Funktion prüft darum selbst (Abschnitt 5) und `make test` ruft alle Funktionen aus `pg_proc` als `anon`, als Konto ohne Person, als Mitarbeiter und als Gesperrte auf.
+- Geteilter Login-Dienst: Mail-Registrierung, Autoconfirm, anonyme und Telefon-Anmeldung sind aus; die App-Registrierung liefert den Claim `xms_edov`; `person_verknuepfen()` verknüpft nur, wenn `auth.identities` eine Identität `azure` zum Konto hat und keine andere Identität mit dieser Mail besteht; der Umschlag lehnt Konten mit Nicht-`azure`-Identität ab.
 - Eingaben per Zod, SQL nur über supabase-js und Funktionsparameter; keine Ausgabe von Nutzertext als HTML.
 - Geheimnisse nur in `.env` (Server `chmod 600`), `.env.example` ohne Werte; gitleaks über die ganze Historie.
 - Nach außen nur 80/443 über Traefik und SSH; Ports-Prüfung nach server-betrieb.md, Abschnitt 2.
@@ -248,8 +252,8 @@ Personenbezogene Daten: Name, Firmen-Mail, Zuordnung Gerät–Person mit Zeiten.
 
 ### Bedrohungsmodell
 - Woran arbeiten wir? Zuordnung Gerät–Person mit Historie (Nachweis, wer welches Gerät hat), Verwaltungsrechte, Personendaten von ca. 25 Mitarbeitern.
-- Was kann schiefgehen? (1) Ein Mitarbeiter liest fremde Geräte oder ruft Verwaltungs-Actions direkt auf. (2) Jemand ohne Firmenkonto kommt über den gemeinsamen Login-Dienst rein, etwa per Mail-Registrierung mit der Mail eines Mitarbeiters, und wird mit dessen Person verknüpft. (3) Historie wird nachträglich geändert oder ein Gerät doppelt vergeben.
-- Was tun wir dagegen? (1) Umschlag + RLS, Negativ-Test je Action und Tabelle → `make test` (Q1). (2) Verknüpfung nur bei Identität vom Anbieter `azure` des eingestellten Mandanten, sonst `kein_zugang`; Test „Mail-Konto mit gleicher Adresse wird nicht verknüpft“ → `make test`; erste Verwaltung nur über `VERWALTUNG_START_EMAIL` (E3). (3) DB-Funktionen mit bedingtem Update, Check-Regel, Trigger gegen Update/Delete/Truncate auf der Historie → `make test` (Q2).
+- Was kann schiefgehen? (1) Ein Mitarbeiter liest fremde Geräte, ruft Verwaltungs-Actions oder DB-Funktionen direkt über PostgREST auf. (2) Jemand ohne Firmenkonto kommt über den gemeinsamen Login-Dienst rein, etwa per Mail-Registrierung mit der Mail eines Mitarbeiters, und wird mit dessen Person verknüpft. (3) Historie wird nachträglich geändert oder ein Gerät doppelt vergeben.
+- Was tun wir dagegen? (1) Umschlag + RLS, Negativ-Test je Action und Tabelle → `make test` (Q1). (2) Verknüpfung nur bei Identität vom Anbieter `azure` des eingestellten Mandanten, sonst `kein_zugang`; Test „Mail-Konto mit gleicher Adresse wird nicht verknüpft“ und „vorab registriertes Mail-Konto wird nach dem Microsoft-Login nicht verknüpft“ → `make test`; erste Verwaltung nur über `VERWALTUNG_START_EMAIL` (E3, Start-Mail liegt in einer Tabelle ohne Grants, `person_verknuepfen()` hat keinen Parameter). (3) DB-Funktionen mit bedingtem Update, Check-Regel, Trigger gegen Update/Delete/Truncate auf der Historie → `make test` (Q2).
 - Reicht das? Ja für Stufe 1, solange die Annahme stimmt, dass im Login-Dienst des Servers nur der Mandant des Büros eingetragen ist; sonst eigener Login-Dienst (Stufe 03 klärt mit dem Auftraggeber). Innerhalb des Mandanten vertrauen wir der Mail aus Microsoft, weil nur die IT des Büros sie vergeben kann.
 
 ## 11. Betrieb
@@ -257,7 +261,8 @@ Personenbezogene Daten: Name, Firmen-Mail, Zuordnung Gerät–Person mit Zeiten.
 - **Rollback:** Promote mit altem SHA; Migrationen nur anhängend. Notfall: `IMAGE_TAG=sha-…` in der `.env`.
 - **Überwachung:** Uptime Kuma prüft `/health` jede Minute mit Zertifikatswarnung, Alarm per Mail an Verwaltung und Dienstleister (Annahme); GlitchTip meldet neue Fehler; `nachzieher` meldet fehlgeschlagene Updates.
 - **Single Points of Failure:** Server (Wiederherstellung durch den Dienstleister aus der Tagessicherung, RTO 4 h), Supabase Server (wie Server), Microsoft Entra ID (Ausfall = niemand meldet sich an; wir warten, keine Umgehung).
-- **Sicherung:** täglich durch den Dienstleister (Annahme); dazu Schema-Sicherung vor jeder Migration. `make restore` spielt in der CI einen Dump des App-Schemas in eine frische DB und prüft Zeilenzahlen (Q4).
+- **Sicherung:** täglich durch den Dienstleister als Dump oder Snapshot, nicht als Dateikopie bei laufender Datenbank (Annahme); dazu nächtlicher `pg_dump` des App-Schemas samt verknüpfter `auth`-Zeilen in ein gesichertes Verzeichnis und Schema-Sicherung vor jeder Migration. Vor dem Livegang einmal Wiederherstellung aus der echten Sicherung auf Staging, Dauer in `docs/NACHWEISE.md`.
+- **Geteilte Supabase, Prüfliste (`docs/BETRIEB.md`):** `APP_SCHEMA` in den freigegebenen Schemas von PostgREST, Callback in der Redirect-Liste, Azure-Tenant-URL, Registrierung aus; `/health` prüft das Schema über PostgREST. `make restore` spielt in der CI einen Dump des App-Schemas in eine frische DB und prüft Zeilenzahlen (Q4).
 - **Fristen (Kalender, 30 Tage Vorlauf):** Client-Secret der Microsoft-App-Registrierung (läuft spätestens nach 24 Monaten ab; danach kein Login), Domain, Node-26-Support-Ende. Image auf GHCR öffentlich (keine Geheimnisse im Image), daher kein Lese-Token; wird das Repo privat, kommt ein Lese-Token mit Ablauf dazu.
 - **Mail:** die App sendet keine Mails; SPF/DKIM/DMARC nicht relevant.
 - RTO 240 min ist größer als das Ausfallbudget: ein Totalausfall verbraucht den Monat. Ehrlich so zugesagt, weil ohne Bereitschaft.
