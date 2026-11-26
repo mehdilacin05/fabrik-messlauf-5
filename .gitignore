@@ -1,0 +1,19 @@
+# Vorlage: als .gitignore ins Repo. Alles, was Werkzeuge beim Prüfen selbst schreiben, gehört hierher,
+# sonst meldet das Gate „nicht committete Änderungen“ nach jedem make check.
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+coverage/
+playwright-report/
+test-results/
+blob-report/
+e2e-ergebnis.json
+wackelnde-tests.txt
+.env*
+!.env.example
+.ae/
+.worktrees/
+supabase/.temp/
+supabase/.branches/

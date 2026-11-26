@@ -1,0 +1,3 @@
+#!/bin/sh
+# Vor dem Push: Geheimnisse in der ganzen Git-Historie suchen (gitleaks). Einrichten einmal je Klon: make hooks
+exec make secrets

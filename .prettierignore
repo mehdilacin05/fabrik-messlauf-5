@@ -1,0 +1,11 @@
+node_modules
+.next
+.worktrees
+.ae
+package-lock.json
+coverage
+playwright-report
+test-results
+tests/akzeptanz
+docs
+README.md
