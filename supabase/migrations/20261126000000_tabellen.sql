@@ -1,3 +1,4 @@
+-- einbahnstrasse: neue Tabellen, nichts wird entfernt; "truncate" kommt nur in den Triggern vor, die es verbieten
 -- Schritt 2: Tabellen person, kategorie, geraet, geraet_ereignis (docs/ARCHITEKTUR.md, Abschnitt 5).
 -- Regeln der Daten (Q2) stehen in der Datenbank: Check, Unique-Indizes, Trigger. Rechte (Q1): RLS an jeder Tabelle,
 -- `authenticated` darf nur lesen; geschrieben wird später ausschließlich über DB-Funktionen (E1, Schritt 3).

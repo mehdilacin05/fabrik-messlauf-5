@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // standardwert: lokale Test-DB und Schema der ersten Migration; die CI setzt beides ausdrücklich
 const S = process.env.APP_SCHEMA ?? "inventar";
-const db = new Client({ connectionString: process.env.DATABASE_URL });
+let db: Client;
 
 type Rolle = "anon" | "authenticated" | "postgres";
 interface Ich {
@@ -98,8 +98,18 @@ async function ereignis(geraetId: string) {
 }
 
 beforeAll(async () => {
-  await db.connect();
-});
+  // Der frische Postgres startet nach dem Einrichten einmal neu; bis dahin verweigert er Verbindungen.
+  for (let versuch = 1; ; versuch++) {
+    db = new Client({ connectionString: process.env.DATABASE_URL });
+    try {
+      await db.connect();
+      return;
+    } catch (e) {
+      if (versuch >= 30) throw e;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+}, 60_000);
 afterAll(async () => {
   await db.end();
 });
