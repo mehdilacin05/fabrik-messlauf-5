@@ -108,7 +108,9 @@ $$;
 
 -- Rechte: nichts, was nicht ausdrücklich vergeben wird. Funktionen sind für PUBLIC standardmäßig ausführbar.
 alter default privileges in schema inventar revoke all on tables from anon, authenticated;
-alter default privileges in schema inventar revoke execute on functions from public, anon;
+-- Standardrechte je Schema werden zu den globalen addiert und können das PUBLIC-EXECUTE nicht entziehen:
+-- darum global (gilt für Objekte der migrierenden Rolle).
+alter default privileges revoke execute on functions from public;
 revoke all on all tables in schema inventar from public, anon, authenticated;
 revoke execute on all functions in schema inventar from public, anon, authenticated;
 grant select on inventar.person, inventar.kategorie, inventar.geraet, inventar.geraet_ereignis to authenticated;

@@ -428,6 +428,23 @@ describe("Katalogtest (wächst mit): Rechte im ganzen Schema (Q1)", () => {
     expect(rows).toEqual([]);
   });
 
+  it("eine neu angelegte Funktion ist für anon und authenticated nicht ausführbar", async () => {
+    await db.query("begin");
+    try {
+      await db.query(
+        `create function ${S}.probe() returns int language sql as 'select 1'`,
+      );
+      const { rows } = await db.query(
+        `select has_function_privilege('anon', $1::regprocedure, 'EXECUTE') as anon,
+                has_function_privilege('authenticated', $1::regprocedure, 'EXECUTE') as auth`,
+        [`${S}.probe()`],
+      );
+      expect(rows[0]).toEqual({ anon: false, auth: false });
+    } finally {
+      await db.query("rollback");
+    }
+  });
+
   it("anon hat kein Ausführungsrecht auf irgendeine Funktion", async () => {
     const { rows } = await db.query(
       `select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace
