@@ -1,12 +1,23 @@
 // Schritt 2: Regeln und Rechte der Tabellen, geprüft gegen die frische Test-DB (`make testdb`, DATABASE_URL).
 // Der Katalogtest wächst mit: er nimmt jede Funktion, die ein späterer Schritt im Schema anlegt, von selbst auf.
 import { randomUUID } from "node:crypto";
+import { readdirSync } from "node:fs";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // standardwert: lokale Test-DB und Schema der ersten Migration; die CI setzt beides ausdrücklich
 const S = process.env.APP_SCHEMA ?? "inventar";
 let db: Client;
+
+// Die Test-DB wird aus den Migrationen im Arbeitsbaum gebaut; ohne die Migrationsdatei prüfen die Tests nichts Neues.
+describe("Migration im Repo", () => {
+  it("enthält die Tabellen-Migration von Schritt 2", () => {
+    const dateien = readdirSync("supabase/migrations").filter((f) =>
+      f.endsWith("_tabellen.sql"),
+    );
+    expect(dateien).toHaveLength(1);
+  });
+});
 
 type Rolle = "anon" | "authenticated" | "postgres";
 interface Ich {
