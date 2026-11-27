@@ -5,12 +5,27 @@ const env = {
   APP_SCHEMA: "inventar",
   SUPABASE_URL: "http://rest.test/",
   SUPABASE_PUBLISHABLE_KEY: "sb_publishable_x",
+  VERWALTUNG_START_EMAIL: "it@firma.example",
   GIT_SHA: "abc1234",
 };
 const antwortet = (status: number): typeof fetch =>
   (async () => new Response("{}", { status })) as typeof fetch;
 
 describe("pruefeGesundheit", () => {
+  it("503 bei leerer VERWALTUNG_START_EMAIL, ohne dass die Datenbank gefragt wird", async () => {
+    let gefragt = false;
+    const hole = (async () => {
+      gefragt = true;
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    const r = await pruefeGesundheit(
+      { ...env, VERWALTUNG_START_EMAIL: "  " },
+      hole,
+    );
+    expect(r.status).toBe(503);
+    expect(gefragt).toBe(false);
+  });
+
   it("200 mit Commit-SHA, wenn das Schema antwortet", async () => {
     expect(await pruefeGesundheit(env, antwortet(200))).toEqual({
       status: 200,
@@ -48,15 +63,17 @@ describe("pruefeGesundheit", () => {
     expect(r.body.fehler).toContain("nicht erreichbar");
   });
 
-  it.each(["APP_SCHEMA", "SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY"])(
-    "503 ohne %s",
-    async (name) => {
-      const r = await pruefeGesundheit(
-        { ...env, [name]: undefined },
-        antwortet(200),
-      );
-      expect(r.status).toBe(503);
-      expect(r.body.fehler).toContain(name);
-    },
-  );
+  it.each([
+    "APP_SCHEMA",
+    "SUPABASE_URL",
+    "SUPABASE_PUBLISHABLE_KEY",
+    "VERWALTUNG_START_EMAIL",
+  ])("503 ohne %s", async (name) => {
+    const r = await pruefeGesundheit(
+      { ...env, [name]: undefined },
+      antwortet(200),
+    );
+    expect(r.status).toBe(503);
+    expect(r.body.fehler).toContain(name);
+  });
 });

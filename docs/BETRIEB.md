@@ -30,7 +30,7 @@ Stand: 2026-11-25 (Gerüst, Bauplan-Schritt 1).
 
 ## 4. Gesundheitsprüfung `/health`
 - Öffentlich, ohne Personendaten: `GET /health` → `200 {"ok":true,"revision":"<Commit-SHA>"}`; sonst `503 {"ok":false,"revision":…,"fehler":"…"}`.
-- Geprüft wird, ob `APP_SCHEMA`, `SUPABASE_URL` und `SUPABASE_PUBLISHABLE_KEY` gesetzt sind und ob PostgREST das Schema `APP_SCHEMA` beantwortet (`GET <SUPABASE_URL>/rest/v1/` mit `Accept-Profile`). PostgREST fragt dabei die Datenbank ab: Datenbank weg → 503, Schema nicht freigegeben → 503.
+- Geprüft wird, ob `APP_SCHEMA`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` und `VERWALTUNG_START_EMAIL` gesetzt sind (Letztere bleibt nach der Einrichtung gesetzt; ohne sie 503, damit eine fehlende erste Verwaltung auffällt) und ob PostgREST das Schema `APP_SCHEMA` beantwortet (`GET <SUPABASE_URL>/rest/v1/` mit `Accept-Profile`). PostgREST fragt dabei die Datenbank ab: Datenbank weg → 503, Schema nicht freigegeben → 503.
 - Der externe Check (Uptime Kuma des Dienstleisters) ruft `/health` jede Minute auf und warnt vor Zertifikatsablauf.
 - Lokaler Nachweis: `make health-test` (Wegwerf-Postgres, -PostgREST und -Gateway; 200, 503 ohne Datenbank, 503 bei falschem Schema).
 
@@ -43,10 +43,16 @@ Stand: 2026-11-25 (Gerüst, Bauplan-Schritt 1).
 ## 6. Einrichtung des Klons
 - Einmal je Klon: `make hooks`. Danach läuft vor jedem `git push` gitleaks über die ganze Historie (`.githooks/pre-push`); ein Fund bricht den Push ab. Ein gefundenes Geheimnis wird widerrufen, nicht nur gelöscht.
 - Workflow-Dateien liegen als Vorlagen unter `ci-vorschlag/`; der Betreiber legt sie nach `.github/` (`/workflows <pr>`).
-- Für den CI-Job `app-e2e` braucht das Image `APP_SCHEMA` (und ab Bauplan-Schritt 4 `VERWALTUNG_START_EMAIL`) als Umgebungsvariable; die Vorlage `ci-vorschlag/ci.yml` setzt sie nicht und muss beim Ablegen um `-e APP_SCHEMA=inventar` im `docker run` ergänzt werden. Das Schema `inventar` legt die erste Migration (`supabase/migrations/*_schema.sql`) an; ohne sie lädt PostgREST den Schema-Cache nicht und `/health` meldet 503.
+- Für den CI-Job `app-e2e` braucht das Image `APP_SCHEMA` (und ab Bauplan-Schritt 4 `VERWALTUNG_START_EMAIL`) als Umgebungsvariable; die Vorlage `ci-vorschlag/ci.yml` setzt beide im `docker run` (`APP_SCHEMA` aus der Migration, `VERWALTUNG_START_EMAIL=start@test.example`); eine schon abgelegte `.github/workflows/ci.yml` braucht diese Zeile ebenfalls (ohne sie meldet `/health` 503 und `app-e2e` bricht mit „App wird nicht gesund“ ab). Das Schema `inventar` legt die erste Migration (`supabase/migrations/*_schema.sql`) an; ohne sie lädt PostgREST den Schema-Cache nicht und `/health` meldet 503.
 
 ## 7. Fristen (Kalender, 30 Tage Vorlauf)
 - Client-Secret der Microsoft-App-Registrierung (läuft spätestens nach 24 Monaten ab; danach kein Login).
 - Domain und Zertifikate (Traefik erneuert Let's-Encrypt-Zertifikate selbst; Ausfall zeigt der externe Check).
 - Node 26: Support voraussichtlich bis Ende April 2029; vorher Major-Wechsel als eigener PR (`.nvmrc`, `ARG NODE_IMAGE`, `@types/node`).
 - Image auf GHCR öffentlich (keine Geheimnisse im Image); wird das Repo privat, kommt ein Lese-Token mit Ablauf dazu.
+
+## 8. Anmeldung und erste Verwaltung (ab Bauplan-Schritt 4)
+- Login nur über Microsoft Entra ID (Anbieter `azure` in Supabase Auth, ein Mandant). Mail-Registrierung, Autoconfirm, anonyme und Telefon-Anmeldung im Login-Dienst ausschalten; `/auth/callback` der App steht in der Redirect-Liste.
+- Erste Verwaltung: `VERWALTUNG_START_EMAIL` (Firmen-Mail der einrichtenden Person) in der `.env` des Stacks setzen. Der Container schreibt sie beim Start (`scripts/migrate.sh`) in die Tabelle `verwaltung_start`; wer sich danach mit dieser Mail über Microsoft anmeldet, wird Verwaltung, aber nur solange es keine Verwaltung gibt. Danach benennt die Verwaltung weitere Personen in der App. Tippfehler in der Mail: Variable korrigieren, Stack neu starten.
+- Der Migrations-Nutzer `<APP_SCHEMA>_migrate` braucht Leserecht auf `auth.users` und `auth.identities`, weil `person_verknuepfen()` als dessen Eigentümer läuft und dort die Anmeldeart prüft (`grant select on auth.users, auth.identities to <APP_SCHEMA>_migrate;` einmal als `postgres`).
+- Wer kein Microsoft-Konto hat, keine Person zur Mail, oder gesperrt ist, sieht „Kein Zugang“ und wird abgemeldet.

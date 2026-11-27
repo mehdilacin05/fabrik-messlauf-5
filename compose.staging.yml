@@ -152,6 +152,7 @@ services:
       APP_ENV: staging
       APP_SCHEMA: "${APP_SCHEMA}"
       SUPABASE_URL: "${SUPABASE_URL}"
+      VERWALTUNG_START_EMAIL: "${VERWALTUNG_START_EMAIL:?VERWALTUNG_START_EMAIL fehlt (Firmen-Mail der ersten Verwaltung)}"
     volumes:
       - "geheim:/geheim:ro"
       - "backup:/backup"
