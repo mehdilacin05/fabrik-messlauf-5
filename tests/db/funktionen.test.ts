@@ -1,6 +1,7 @@
 // Schritt 3: DB-Funktionen für Geräte (E1, Q2), geprüft gegen die frische Test-DB (`make testdb`, DATABASE_URL).
 // Jede Verwaltungsfunktion läuft als `authenticated` mit Token-Subjekt in einer eigenen Verbindung und Transaktion.
 import { randomUUID } from "node:crypto";
+import { readdirSync } from "node:fs";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -27,6 +28,16 @@ beforeAll(async () => {
 }, 60_000);
 afterAll(async () => {
   await db.end();
+});
+
+// Die Test-DB wird aus den Migrationen im Arbeitsbaum gebaut; ohne die Migrationsdatei prüfen die Tests nichts Neues.
+describe("Migration im Repo", () => {
+  it("enthält die Funktionen-Migration von Schritt 3", () => {
+    const dateien = readdirSync("supabase/migrations").filter((f) =>
+      f.endsWith("_funktionen.sql"),
+    );
+    expect(dateien).toHaveLength(1);
+  });
 });
 
 type Fehler = { code?: string; message: string };
@@ -132,34 +143,43 @@ describe("geraet_anlegen", () => {
     const v = await person("verwaltung");
     const sn = `SN-${kurz()}`;
     const g = await lagergeraet(sn);
-    const vorher = (await db.query(`select count(*)::int n from ${S}.geraet`))
-      .rows[0].n;
+    const marke = `M-${kurz()}`;
+    const zaehle = async () =>
+      (
+        await db.query(
+          `select count(*)::int n from ${S}.geraet where bezeichnung = $1`,
+          [marke],
+        )
+      ).rows[0].n;
+    expect(await zaehle()).toBe(0);
     expect(
       fehler(
-        await als(v.auth, `select ${S}.geraet_anlegen($1, 'x', $2, null)`, [
-          sn.toLowerCase(),
-          await kategorieId(),
-        ]),
+        await als(
+          v.auth,
+          `select ${S}.geraet_anlegen($1, '${marke}', $2, null)`,
+          [sn.toLowerCase(), await kategorieId()],
+        ),
       ),
     ).toContain("seriennummer_vergeben");
     expect(
       fehler(
-        await als(v.auth, `select ${S}.geraet_anlegen($1, 'x', $2, null)`, [
-          `SN-${kurz()}`,
-          randomUUID(),
-        ]),
+        await als(
+          v.auth,
+          `select ${S}.geraet_anlegen($1, '${marke}', $2, null)`,
+          [`SN-${kurz()}`, randomUUID()],
+        ),
       ),
     ).toContain("kategorie_unbekannt");
     expect(
       fehler(
-        await als(v.auth, `select ${S}.geraet_anlegen(' ', 'x', $1, null)`, [
-          await kategorieId(),
-        ]),
+        await als(
+          v.auth,
+          `select ${S}.geraet_anlegen(' ', '${marke}', $1, null)`,
+          [await kategorieId()],
+        ),
       ),
     ).toContain("ungueltig");
-    expect(
-      (await db.query(`select count(*)::int n from ${S}.geraet`)).rows[0].n,
-    ).toBe(vorher);
+    expect(await zaehle()).toBe(0);
     expect(await ereignisse(g)).toEqual([]);
   });
 });
@@ -292,13 +312,12 @@ describe("Rechte", () => {
     const v = await person("verwaltung");
     ok(await als(v.auth, `select ${S}.geraet_ausgeben($1, $2)`, [aus, inh.id]));
     const vorher = [await ereignisse(lager), await ereignisse(aus)];
-    const anzahl = (await db.query(`select count(*)::int n from ${S}.geraet`))
-      .rows[0].n;
+    const marke = `M-${kurz()}`;
 
     for (const wer of [m.auth, gesperrteVerwaltung.auth, ohnePerson]) {
       const k = await kategorieId();
       for (const [aufruf, params] of [
-        ["geraet_anlegen($1, 'x', $2, null)", [`SN-${kurz()}`, k]],
+        [`geraet_anlegen($1, '${marke}', $2, null)`, [`SN-${kurz()}`, k]],
         ["geraet_ausgeben($1, $2)", [lager, m.id]],
         ["geraet_zuruecknehmen($1)", [aus]],
         ["geraet_ausmustern($1)", [lager]],
@@ -316,8 +335,13 @@ describe("Rechte", () => {
     });
     expect([await ereignisse(lager), await ereignisse(aus)]).toEqual(vorher);
     expect(
-      (await db.query(`select count(*)::int n from ${S}.geraet`)).rows[0].n,
-    ).toBe(anzahl);
+      (
+        await db.query(
+          `select count(*)::int n from ${S}.geraet where bezeichnung = $1`,
+          [marke],
+        )
+      ).rows[0].n,
+    ).toBe(0);
   });
 
   it("anon hat kein Ausführungsrecht auf die Verwaltungsfunktionen", async () => {
