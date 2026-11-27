@@ -22,7 +22,7 @@ docker run -d --name "$n-rest" --network "$n" -e PGRST_DB_URI="postgres://authen
 # Gateway wie in compose.staging.yml: /rest/v1 → PostgREST (Supabase erreicht die App ebenfalls nur so)
 docker run -d --name "$n-gw" --network "$n" "$GATEWAY_IMAGE" sh -c "printf ':8000 {\n handle_path /rest/v1/* {\n  reverse_proxy $n-rest:3000\n }\n respond 404\n}\n' > /tmp/Caddyfile && exec caddy run --config /tmp/Caddyfile --adapter caddyfile" >/dev/null
 docker run -d --name "$n-app" --network "$n" -e MIGRATE=aus -e APP_SCHEMA="$schema" -e SUPABASE_URL="http://$n-gw:8000" \
-  -e SUPABASE_PUBLISHABLE_KEY=sb_publishable_test "$IMAGE" >/dev/null
+  -e SUPABASE_PUBLISHABLE_KEY=sb_publishable_test -e VERWALTUNG_START_EMAIL=start@test.example "$IMAGE" >/dev/null
 
 antwort=""
 for _ in $(seq 60); do antwort=$(abfrage 2>/dev/null || true); case "$antwort" in 200*) break ;; esac; sleep 2; done
@@ -38,7 +38,7 @@ case "$antwort" in "503 "*"\"revision\":\"$GIT_SHA\""*) ;; *) echo "health-test:
 docker start "$n-db" >/dev/null
 docker rm -f "$n-app" >/dev/null
 docker run -d --name "$n-app" --network "$n" -e MIGRATE=aus -e APP_SCHEMA=nicht_freigegeben -e SUPABASE_URL="http://$n-gw:8000" \
-  -e SUPABASE_PUBLISHABLE_KEY=sb_publishable_test "$IMAGE" >/dev/null
+  -e SUPABASE_PUBLISHABLE_KEY=sb_publishable_test -e VERWALTUNG_START_EMAIL=start@test.example "$IMAGE" >/dev/null
 for _ in $(seq 60); do antwort=$(abfrage 2>/dev/null || true); case "$antwort" in 503*|200*) break ;; esac; sleep 2; done
 echo "falsches Schema: $antwort"
 case "$antwort" in "503 "*) ;; *) echo "health-test: erwartet 503 bei nicht freigegebenem Schema" >&2; exit 1 ;; esac
