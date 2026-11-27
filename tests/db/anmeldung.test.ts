@@ -3,6 +3,7 @@
 // stehen. Die Tabelle `person` ist dabei gesperrt (share row exclusive) und alle bestehenden Verwaltungen sind
 // herabgestuft, damit „es gibt noch keine Verwaltung“ auch neben den anderen Testdateien gilt.
 import { randomUUID } from "node:crypto";
+import { readdirSync } from "node:fs";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -27,6 +28,16 @@ beforeAll(async () => {
 }, 60_000);
 afterAll(async () => {
   await db.end();
+});
+
+// Die Test-DB wird aus den Migrationen im Arbeitsbaum gebaut; ohne die Migrationsdatei prüfen die Tests nichts Neues.
+describe("Migration im Repo", () => {
+  it("enthält die Anmeldungs-Migration von Schritt 4", () => {
+    const dateien = readdirSync("supabase/migrations").filter((f) =>
+      f.endsWith("_anmeldung.sql"),
+    );
+    expect(dateien).toHaveLength(1);
+  });
 });
 
 interface Konto {
