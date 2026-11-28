@@ -169,6 +169,7 @@ jobs:
           # Schema der App = das eine Schema, das die Migrationen anlegen (die App liest APP_SCHEMA, nie fest im Code).
           APP_SCHEMA=$(grep -hoiE 'create schema( if not exists)? "?[a-z0-9_]+' supabase/migrations/*.sql | head -1 | awk '{print $NF}' | tr -d '"')
           [ -n "$APP_SCHEMA" ] || { echo "::error::Kein 'create schema' in supabase/migrations"; exit 1; }
+          echo "APP_SCHEMA=$APP_SCHEMA" >> "$GITHUB_ENV" # auch für die Testschritte (Testhelfer brauchen das Schema)
           docker run -d --name app --network host \
             -e MIGRATE=aus -e APP_SCHEMA="$APP_SCHEMA" -e VERWALTUNG_START_EMAIL=start@test.example -e SUPABASE_URL="$E2E_API_URL" -e SUPABASE_PUBLISHABLE_KEY="${E2E_PUBLISHABLE_KEY:-$E2E_ANON_KEY}" app:e2e
           for _ in $(seq 60); do curl -fsS "$BASE_URL/health" >/dev/null && exit 0; sleep 2; done
