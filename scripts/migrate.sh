@@ -12,6 +12,15 @@ if [ "${MIGRATE:-an}" = "aus" ]; then echo "migrate: aus (CI: Supabase CLI hat d
 : "${MIGRATE_DATABASE_URL:?MIGRATE_DATABASE_URL fehlt (Nutzer mit Rechten auf das App-Schema)}"
 : "${APP_SCHEMA:?APP_SCHEMA fehlt (eigenes Schema dieser App)}"
 DB="$MIGRATE_DATABASE_URL"
+# E3: Start-Mail der ersten Verwaltung in die Tabelle ohne Rechte für anon und authenticated; nur person_verknuepfen() liest sie.
+# Wert und Schema gehen als psql-Variablen (:'mail', :"schema"), nie als Text in die SQL-Zeile.
+startmail() {
+  [ -n "${VERWALTUNG_START_EMAIL:-}" ] || return 0
+  psql "$DB" -qX -v ON_ERROR_STOP=1 -v schema="$APP_SCHEMA" -v mail="$VERWALTUNG_START_EMAIL" <<'SQL'
+insert into :"schema".verwaltung_start (email) values (:'mail')
+on conflict (id) do update set email = excluded.email, updated_at = now();
+SQL
+}
 psql "$DB" -qtAX -v ON_ERROR_STOP=1 -c "create schema if not exists \"$APP_SCHEMA\";
   create table if not exists \"$APP_SCHEMA\".schema_migrations (datei text primary key, am timestamptz default now());"
 neu=""
@@ -21,7 +30,7 @@ for f in /app/migrations/*.sql; do
   da=$(psql "$DB" -qtAX -c "select 1 from \"$APP_SCHEMA\".schema_migrations where datei = '$n'")
   [ "$da" = "1" ] || neu="$neu $f"
 done
-if [ -z "$neu" ]; then echo "migrate: nichts zu tun"; exit 0; fi
+if [ -z "$neu" ]; then startmail; echo "migrate: nichts zu tun"; exit 0; fi
 mkdir -p /backup
 stempel=$(date -u +%Y%m%dT%H%M%SZ)
 pg_dump "$DB" -n "$APP_SCHEMA" -Fc -f "/backup/$APP_SCHEMA-$stempel.dump"
@@ -33,3 +42,4 @@ for f in $neu; do
     echo "insert into \"$APP_SCHEMA\".schema_migrations(datei) values ('$n');"; } \
     | psql "$DB" -qX -1 -v ON_ERROR_STOP=1
 done
+startmail

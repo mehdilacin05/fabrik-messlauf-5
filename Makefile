@@ -125,3 +125,9 @@ hooks: ## einmal je Klon: gitleaks vor jedem Push (.githooks/pre-push)
 # Node 26 (Active LTS) ist allein ~240 MB groß (Binärdatei 141 MB auf arm64), gemessen im Gerüst: Image 319 MB. Die
 # Vorlagengrenze 250 MB galt für kleinere Node-Versionen; hier gilt diese Zeile (spätere Zuweisung gewinnt).
 IMAGE_MAX_MB = 350
+
+# Q5 (Fitness-Test): ein Modul nutzt ein anderes nur über dessen index.ts. Gehört zu `make check` (angehängt, siehe unten).
+.PHONY: modulgrenzen
+modulgrenzen: ## scheitert bei jedem Import an src/modules/<modul>/index.ts vorbei
+	python3 -I scripts/modulgrenzen.py .
+check: modulgrenzen

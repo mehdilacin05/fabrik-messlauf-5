@@ -27,6 +27,10 @@ export async function pruefeGesundheit(
   if (!schema) return fehler("APP_SCHEMA fehlt");
   if (!url) return fehler("SUPABASE_URL fehlt");
   if (!schluessel) return fehler("SUPABASE_PUBLISHABLE_KEY fehlt");
+  // E3: ohne Start-Mail kann niemand die erste Verwaltung werden. shortcut: die Variable ist Pflicht, auch wenn schon eine
+  // Verwaltung existiert (anon darf keine Funktion aufrufen, also keine Abfrage ohne Konto); bei Bedarf Prüfung der DB nachrüsten.
+  if (!env.VERWALTUNG_START_EMAIL?.trim())
+    return fehler("VERWALTUNG_START_EMAIL fehlt");
 
   try {
     const antwort = await hole(`${url.replace(/\/+$/, "")}/rest/v1/`, {

@@ -4,7 +4,7 @@
 # · Compose path compose.yml · Environment variables · GitOps-Updates/Polling AUS (Polling deployt zu früh) · Deploy the stack.
 # Privates Repo: in Portainer „Authentication“ mit Lesetoken. Danach zieht der Dienst `nachzieher`
 # den Tag `prod` binnen einer Minute nach Promote; den Tag setzt nur promote.yml. Notfall ohne GitHub: IMAGE_TAG=sha-<alter Commit> eintragen, neu starten.
-#   APP, APP_SCHEMA, REPO, APP_HOST, SUPABASE_URL (öffentliche Adresse der Server-Supabase)
+#   APP, APP_SCHEMA, REPO, APP_HOST, SUPABASE_URL (öffentliche Adresse der Server-Supabase), VERWALTUNG_START_EMAIL (Firmen-Mail der ersten Verwaltung, Bauplan-Schritt 4)
 #   Geheim (in Portainer als Umgebungsvariable, nie im Repo): SUPABASE_PUBLISHABLE_KEY, MIGRATE_DATABASE_URL
 #   optional: TRAEFIK_NETZ (public), TRAEFIK_EINGANG (websecure), TRAEFIK_ZERTIFIKAT (Let's-Encrypt-Resolver des Traefik, mytlschallenge), SUPABASE_NETZ (Netz der Server-Supabase, für db:5432)
 name: "${APP:?APP fehlt}"
@@ -17,6 +17,7 @@ services:
       APP_SCHEMA: "${APP_SCHEMA:?APP_SCHEMA fehlt}"
       SUPABASE_URL: "${SUPABASE_URL:?SUPABASE_URL fehlt}"
       SUPABASE_PUBLISHABLE_KEY: "${SUPABASE_PUBLISHABLE_KEY:?SUPABASE_PUBLISHABLE_KEY fehlt}"
+      VERWALTUNG_START_EMAIL: "${VERWALTUNG_START_EMAIL:?VERWALTUNG_START_EMAIL fehlt (Firmen-Mail der ersten Verwaltung)}"
       MIGRATE_DATABASE_URL: "${MIGRATE_DATABASE_URL:?MIGRATE_DATABASE_URL fehlt (eigener Nutzer <app>_migrate)}"
     volumes:
       - "backup:/backup" # Sicherung des App-Schemas vor jeder Migration (scripts/migrate.sh, behält 5)
